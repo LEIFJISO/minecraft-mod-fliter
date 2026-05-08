@@ -48,6 +48,10 @@ class ModFilterApp:
         ttk.Entry(f2, textvariable=self.output_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Button(f2, text='浏览...', command=self._browse_output).pack(side=tk.LEFT, padx=(6, 0))
 
+        # ── Copy/Move option ──
+        self.copy_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(main, text='复制到输出文件夹 (保留原文件)', variable=self.copy_var).pack(anchor=tk.W, pady=(0, 10))
+
         # ── Filter button ──
         self.filter_btn = ttk.Button(main, text='开始筛选', command=self._start_filter)
         self.filter_btn.pack(pady=(0, 8))
@@ -125,6 +129,7 @@ class ModFilterApp:
         self._is_running = True
         self.filter_btn.config(state=tk.DISABLED)
         self.progress['value'] = 0
+        self._copy_mode = self.copy_var.get()
 
         thread = threading.Thread(
             target=self._run_filter, args=(input_dir, output_dir), daemon=True
@@ -135,6 +140,7 @@ class ModFilterApp:
         results = filter_mods(
             Path(input_dir),
             Path(output_dir),
+            copy=self._copy_mode,
             progress_callback=self._on_progress,
         )
         self.root.after(0, self._on_filter_done, results)
@@ -162,7 +168,7 @@ class ModFilterApp:
 
         parts = [f'共 {len(results)} 个文件']
         if count_server:
-            parts.append(f'{count_server} 个已移至输出文件夹')
+            parts.append(f'{count_server} 个已{"复制" if self._copy_mode else "移动"}至输出文件夹')
         if count_client:
             parts.append(f'{count_client} 个仅客户端')
         if count_skip:

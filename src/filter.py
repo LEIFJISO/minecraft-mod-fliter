@@ -112,13 +112,16 @@ def is_server_compatible(sides: set[str]) -> bool:
 def filter_mods(
     input_dir: Path,
     output_dir: Path,
+    *,
+    copy: bool = False,
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> list[FilterResult]:
-    """Filter NeoForge mods from input_dir and move server-compatible ones to output_dir.
+    """Filter NeoForge mods from input_dir.
 
     Args:
         input_dir: Directory containing NeoForge mod .jar files.
-        output_dir: Directory where server-side mods will be moved.
+        output_dir: Directory where server-side mods will be written.
+        copy: If True, copy files (keep originals). If False, move files.
         progress_callback: Optional callback(current, total) for progress updates.
 
     Returns:
@@ -149,10 +152,14 @@ def filter_mods(
                         f'目标文件已存在, 跳过 (side: {", ".join(sorted(sides))})'
                     ))
                 else:
-                    shutil.move(str(jar_path), str(dest))
+                    action = '复制' if copy else '移动'
+                    if copy:
+                        shutil.copy2(str(jar_path), str(dest))
+                    else:
+                        shutil.move(str(jar_path), str(dest))
                     results.append(FilterResult(
                         jar_path.name, 'server',
-                        f'已移动到输出文件夹 (side: {", ".join(sorted(sides))})'
+                        f'已{action}到输出文件夹 (side: {", ".join(sorted(sides))})'
                     ))
             else:
                 results.append(FilterResult(
