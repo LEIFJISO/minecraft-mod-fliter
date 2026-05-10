@@ -5,7 +5,7 @@ import zipfile
 from pathlib import Path
 from typing import Callable, Optional
 
-from .bytecode import has_client_side_code
+from .bytecode import analyze_side_references, has_client_side_code
 from .parsers import resolve_mod_metadata
 
 
@@ -97,11 +97,11 @@ def _filter_one(
 
     if 'unknown' in sides:
         if strict:
-            has_client, client_cls = has_client_side_code(jar_path)
-            if has_client:
+            refs = analyze_side_references(jar_path)
+            if refs['has_client'] and not refs['has_server']:
                 return FilterResult(
                     name, 'client',
-                    f'(未知加载器) 检测到客户端专属代码 → {client_cls}',
+                    f'(未知加载器) 仅检测到客户端代码 → {refs["client_cls"]}',
                     loader, declared_side
                 )
         return FilterResult(
@@ -113,11 +113,11 @@ def _filter_one(
     # ── Strict mode: bytecode analysis ──
     if strict and 'BOTH' in sides and 'SERVER' not in sides and 'CLIENT' not in sides:
         # Only BOTH declared — verify with bytecode
-        has_client, client_cls = has_client_side_code(jar_path)
-        if has_client:
+        refs = analyze_side_references(jar_path)
+        if refs['has_client'] and not refs['has_server']:
             return FilterResult(
                 name, 'client',
-                f'({loader}) 声明 side=BOTH 但检测到客户端专属代码 → {client_cls}',
+                f'({loader}) 声明 side=BOTH 但仅含客户端代码 → {refs["client_cls"]}',
                 loader, 'BOTH'
             )
 

@@ -1,15 +1,14 @@
-"""Bytecode analysis for detecting client-side-only mod usage.
+"""Bytecode analysis for detecting client-side and server-side mod usage.
 
-Reads Java class files inside a mod JAR to check if any class
-references packages that are only available on the Minecraft client.
+Reads Java class files inside a mod JAR to check which side-specific
+packages are referenced.
 """
 
 import struct
 import zipfile
 from pathlib import Path
 
-# Packages that are only available on the Minecraft client side.
-# References to these indicate the mod can only run on the client.
+# Packages only available on the Minecraft client.
 CLIENT_ONLY_PREFIXES = (
     'net/minecraft/client/',
     'net/minecraftforge/client/',
@@ -18,8 +17,16 @@ CLIENT_ONLY_PREFIXES = (
     'net/fabricmc/fabric/impl/client/',
 )
 
+# Packages only available on the Minecraft dedicated server.
+SERVER_ONLY_PREFIXES = (
+    'net/minecraft/server/',
+    'net/minecraftforge/server/',
+    'net/neoforged/neoforge/server/',
+    'net/fabricmc/fabric/api/server/',
+    'net/fabricmc/fabric/impl/server/',
+)
+
 # Max number of class files to scan before giving up.
-# Large mods can have thousands of classes; scanning a sample is enough.
 MAX_CLASS_SCAN = 300
 
 
@@ -121,8 +128,8 @@ def _resolve_class_name(cp: list, class_index: int, data: bytes) -> str | None:
     return data[utf8_offset + 2 : utf8_offset + 2 + str_len].decode('utf-8', errors='replace')
 
 
-def _class_references_client(cp: list, data: bytes) -> bool:
-    """Check whether a single class's constant pool references any client-only package."""
+def _class_references_side(cp: list, data: bytes, prefixes: tuple[str, ...]) -> bool:
+    """Check whether a single class references any of the given package prefixes."""
     for i, entry in enumerate(cp):
         if entry is None:
             continue
@@ -136,7 +143,7 @@ def _class_references_client(cp: list, data: bytes) -> bool:
 
         if class_index is not None:
             name = _resolve_class_name(cp, class_index, data)
-            if name and name.startswith(CLIENT_ONLY_PREFIXES):
+            if name and name.startswith(prefixes):
                 return True
 
     return False
@@ -150,6 +157,28 @@ def has_client_side_code(jar_path: Path) -> tuple[bool, str | None]:
     Returns:
         (has_client_code, first_matched_class_name_or_None)
     """
+    result = analyze_side_references(jar_path)
+    return result['has_client'], result['client_cls']
+
+
+def analyze_side_references(jar_path: Path) -> dict:
+    """Analyze a mod JAR for client-side and server-side code references.
+
+    Scans up to MAX_CLASS_SCAN class files inside the JAR.
+
+    Returns:
+        dict with keys:
+            has_client  (bool) — found references to client-only packages
+            has_server  (bool) — found references to server-only packages
+            client_cls  (str|None) — first class that triggered client detection
+            server_cls  (str|None) — first class that triggered server detection
+    """
+    result = {
+        'has_client': False,
+        'has_server': False,
+        'client_cls': None,
+        'server_cls': None,
+    }
     try:
         with zipfile.ZipFile(jar_path, 'r') as zf:
             scanned = 0
@@ -168,8 +197,17 @@ def has_client_side_code(jar_path: Path) -> tuple[bool, str | None]:
                 except Exception:
                     continue
 
-                if _class_references_client(cp, data):
-                    return True, entry_name
+                if not result['has_client'] and _class_references_side(cp, data, CLIENT_ONLY_PREFIXES):
+                    result['has_client'] = True
+                    result['client_cls'] = entry_name
+
+                if not result['has_server'] and _class_references_side(cp, data, SERVER_ONLY_PREFIXES):
+                    result['has_server'] = True
+                    result['server_cls'] = entry_name
+
+                # Early exit if both sides found
+                if result['has_client'] and result['has_server']:
+                    break
 
                 scanned += 1
                 if scanned >= MAX_CLASS_SCAN:
@@ -178,4 +216,4 @@ def has_client_side_code(jar_path: Path) -> tuple[bool, str | None]:
     except Exception:
         pass
 
-    return False, None
+    return result
