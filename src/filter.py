@@ -1,111 +1,36 @@
-"""Core filtering logic for NeoForge mods."""
+"""Core filtering logic for Minecraft mods (Fabric / Forge / NeoForge)."""
 
-import re
 import shutil
 import zipfile
 from pathlib import Path
 from typing import Callable, Optional
 
-# Try to use a proper TOML parser
-try:
-    import tomllib  # Python 3.11+
-except ImportError:
-    try:
-        import tomli as tomllib
-    except ImportError:
-        tomllib = None
+from .bytecode import has_client_side_code
+from .parsers import resolve_mod_metadata
 
 
 class FilterResult:
     """Result of filtering a single mod jar."""
 
-    __slots__ = ('jar_name', 'status', 'reason')
+    __slots__ = ('jar_name', 'status', 'reason', 'loader', 'declared_side')
 
-    def __init__(self, jar_name: str, status: str, reason: str):
+    def __init__(self, jar_name: str, status: str, reason: str,
+                 loader: str = '', declared_side: str = ''):
         self.jar_name = jar_name
-        self.status = status   # 'server', 'client', 'error', 'skipped'
+        self.status = status       # 'server', 'client', 'skipped', 'error'
         self.reason = reason
-
-
-def _parse_side_simple(toml_content: str) -> set[str]:
-    """Simple regex-based parser to extract side values from neoforge.mods.toml."""
-    sides: set[str] = set()
-    in_mods_section = False
-
-    for line in toml_content.split('\n'):
-        stripped = line.strip()
-        if not stripped or stripped.startswith('#'):
-            continue
-
-        if stripped == '[[mods]]':
-            in_mods_section = True
-            continue
-        if stripped.startswith('[[') or stripped.startswith('['):
-            in_mods_section = False
-            continue
-
-        if in_mods_section:
-            m = re.match(r'^side\s*=\s*"([^"]*)"', stripped, re.IGNORECASE)
-            if m:
-                sides.add(m.group(1).upper())
-
-    return sides
-
-
-def parse_mod_side(jar_path: Path) -> set[str]:
-    """Parse the neoforge.mods.toml inside a jar and return a set of side values."""
-    sides: set[str] = set()
-
-    with zipfile.ZipFile(jar_path, 'r') as zf:
-        toml_name = None
-        for candidate in ('META-INF/neoforge.mods.toml', 'neoforge.mods.toml'):
-            if candidate in zf.NameToInfo:
-                toml_name = candidate
-                break
-
-        if toml_name is None:
-            return {'unknown'}
-
-        raw_bytes = zf.read(toml_name)
-        try:
-            raw = raw_bytes.decode('utf-8')
-        except UnicodeDecodeError:
-            try:
-                raw = raw_bytes.decode('utf-8-sig')
-            except UnicodeDecodeError:
-                raw = raw_bytes.decode('latin-1')
-
-        if tomllib is not None:
-            try:
-                data = tomllib.loads(raw)
-                mods_list = data.get('mods', [])
-                if not isinstance(mods_list, list):
-                    mods_list = [mods_list]
-                for mod_entry in mods_list:
-                    side = mod_entry.get('side', 'BOTH').upper()
-                    sides.add(side)
-                return sides
-            except Exception:
-                pass
-
-        # Fallback to simple regex parser
-        try:
-            sides = _parse_side_simple(raw)
-        except Exception:
-            return {'error'}
-
-    return sides
+        self.loader = loader       # 'Fabric', 'Forge', 'NeoForge', 'Unknown'
+        self.declared_side = declared_side  # declared side string (e.g. 'BOTH', 'CLIENT')
 
 
 def is_server_compatible(sides: set[str]) -> bool:
-    """Determine if a mod is server-compatible based on side values."""
+    """Determine if a set of side values indicates server compatibility."""
     if 'error' in sides:
         return False
     if 'unknown' in sides:
         return False
     if not sides:
         return False
-    # Include if any mod entry is SERVER or BOTH
     return bool(sides & {'SERVER', 'BOTH'})
 
 
@@ -114,15 +39,18 @@ def filter_mods(
     output_dir: Path,
     *,
     copy: bool = False,
+    strict: bool = True,
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> list[FilterResult]:
-    """Filter NeoForge mods from input_dir.
+    """Filter mods from input_dir, keeping only server-compatible ones.
 
     Args:
-        input_dir: Directory containing NeoForge mod .jar files.
+        input_dir: Directory containing mod .jar files.
         output_dir: Directory where server-side mods will be written.
         copy: If True, copy files (keep originals). If False, move files.
-        progress_callback: Optional callback(current, total) for progress updates.
+        strict: If True, run bytecode analysis to detect mods that
+                declare side=BOTH but actually only use client-side APIs.
+        progress_callback: Optional callback(current, total) for progress.
 
     Returns:
         List of FilterResult for each processed jar.
@@ -137,39 +65,84 @@ def filter_mods(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for idx, jar_path in enumerate(jar_files, 1):
-        try:
-            sides = parse_mod_side(jar_path)
-
-            if 'error' in sides:
-                results.append(FilterResult(jar_path.name, 'error', 'TOML 解析失败'))
-            elif 'unknown' in sides:
-                results.append(FilterResult(jar_path.name, 'skipped', '未找到 neoforge.mods.toml'))
-            elif is_server_compatible(sides):
-                dest = output_dir / jar_path.name
-                if dest.exists():
-                    results.append(FilterResult(
-                        jar_path.name, 'skipped',
-                        f'目标文件已存在, 跳过 (side: {", ".join(sorted(sides))})'
-                    ))
-                else:
-                    action = '复制' if copy else '移动'
-                    if copy:
-                        shutil.copy2(str(jar_path), str(dest))
-                    else:
-                        shutil.move(str(jar_path), str(dest))
-                    results.append(FilterResult(
-                        jar_path.name, 'server',
-                        f'已{action}到输出文件夹 (side: {", ".join(sorted(sides))})'
-                    ))
-            else:
-                results.append(FilterResult(
-                    jar_path.name, 'client',
-                    f'跳过, 仅在客户端运行 (side: {", ".join(sorted(sides))})'
-                ))
-        except Exception as e:
-            results.append(FilterResult(jar_path.name, 'error', str(e)))
+        result = _filter_one(jar_path, output_dir, copy=copy, strict=strict)
+        results.append(result)
 
         if progress_callback:
             progress_callback(idx, total)
 
     return results
+
+
+def _filter_one(
+    jar_path: Path,
+    output_dir: Path,
+    *,
+    copy: bool,
+    strict: bool,
+) -> FilterResult:
+    """Process a single mod jar and return a FilterResult."""
+    name = jar_path.name
+
+    metadata = resolve_mod_metadata(jar_path)
+    sides = metadata['sides']
+    loader = metadata['loader']
+    declared_side = metadata.get('raw_side') or (
+        ', '.join(sorted(sides - {'error', 'unknown'})) if sides else ''
+    )
+
+    # ── Handle error / unknown metadata ──
+    if 'error' in sides:
+        return FilterResult(name, 'error', f'({loader}) 元数据解析失败', loader, declared_side)
+
+    if 'unknown' in sides:
+        if strict:
+            has_client, client_cls = has_client_side_code(jar_path)
+            if has_client:
+                return FilterResult(
+                    name, 'client',
+                    f'(未知加载器) 检测到客户端专属代码 → {client_cls}',
+                    loader, declared_side
+                )
+        return FilterResult(
+            name, 'skipped',
+            '(未知加载器) 未找到支持的元数据文件',
+            loader, declared_side
+        )
+
+    # ── Strict mode: bytecode analysis ──
+    if strict and 'BOTH' in sides and 'SERVER' not in sides and 'CLIENT' not in sides:
+        # Only BOTH declared — verify with bytecode
+        has_client, client_cls = has_client_side_code(jar_path)
+        if has_client:
+            return FilterResult(
+                name, 'client',
+                f'({loader}) 声明 side=BOTH 但检测到客户端专属代码 → {client_cls}',
+                loader, 'BOTH'
+            )
+
+    # ── Normal side-based decision ──
+    if is_server_compatible(sides):
+        dest = output_dir / name
+        if dest.exists():
+            return FilterResult(
+                name, 'skipped',
+                f'({loader}) 目标文件已存在 (side: {", ".join(sorted(sides))})',
+                loader, declared_side
+            )
+        action = '复制' if copy else '移动'
+        if copy:
+            shutil.copy2(str(jar_path), str(dest))
+        else:
+            shutil.move(str(jar_path), str(dest))
+        return FilterResult(
+            name, 'server',
+            f'({loader}) 已{action}到输出文件夹 (side: {", ".join(sorted(sides))})',
+            loader, declared_side
+        )
+    else:
+        return FilterResult(
+            name, 'client',
+            f'({loader}) 仅客户端运行 (side: {", ".join(sorted(sides))})',
+            loader, declared_side
+        )

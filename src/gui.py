@@ -1,4 +1,4 @@
-"""GUI for Minecraft NeoForge Mod Filter."""
+"""GUI for Minecraft Mod Filter (Fabric / Forge / NeoForge)."""
 
 import os
 import threading
@@ -10,13 +10,13 @@ from .filter import filter_mods
 
 
 class ModFilterApp:
-    """Main GUI application for filtering NeoForge mods."""
+    """Main GUI application for filtering Minecraft mods."""
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title('Minecraft NeoForge Mod 筛选器')
-        self.root.geometry('750x520')
-        self.root.minsize(600, 400)
+        self.root.title('Minecraft Mod 筛选器 (Fabric / Forge / NeoForge)')
+        self.root.geometry('800x550')
+        self.root.minsize(650, 450)
         self.root.resizable(True, True)
 
         self._is_running = False
@@ -48,9 +48,21 @@ class ModFilterApp:
         ttk.Entry(f2, textvariable=self.output_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Button(f2, text='浏览...', command=self._browse_output).pack(side=tk.LEFT, padx=(6, 0))
 
-        # ── Copy/Move option ──
+        # ── Options ──
+        opts = ttk.Frame(main)
+        opts.pack(fill=tk.X, pady=(0, 10))
+
         self.copy_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(main, text='复制到输出文件夹 (保留原文件)', variable=self.copy_var).pack(anchor=tk.W, pady=(0, 10))
+        ttk.Checkbutton(
+            opts, text='复制到输出文件夹 (不保留原文件则移动)',
+            variable=self.copy_var
+        ).pack(side=tk.LEFT)
+
+        self.strict_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            opts, text='严格模式: 检测声明 BOTH 但实际仅含客户端代码的 Mod',
+            variable=self.strict_var
+        ).pack(side=tk.LEFT, padx=(20, 0))
 
         # ── Filter button ──
         self.filter_btn = ttk.Button(main, text='开始筛选', command=self._start_filter)
@@ -74,7 +86,7 @@ class ModFilterApp:
         self.tree.heading('reason', text='说明')
         self.tree.column('status', width=60, anchor=tk.CENTER)
         self.tree.column('name', width=240)
-        self.tree.column('reason', width=350)
+        self.tree.column('reason', width=430)
 
         scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
@@ -130,6 +142,7 @@ class ModFilterApp:
         self.filter_btn.config(state=tk.DISABLED)
         self.progress['value'] = 0
         self._copy_mode = self.copy_var.get()
+        self._strict_mode = self.strict_var.get()
 
         thread = threading.Thread(
             target=self._run_filter, args=(input_dir, output_dir), daemon=True
@@ -141,6 +154,7 @@ class ModFilterApp:
             Path(input_dir),
             Path(output_dir),
             copy=self._copy_mode,
+            strict=self._strict_mode,
             progress_callback=self._on_progress,
         )
         self.root.after(0, self._on_filter_done, results)
@@ -155,7 +169,7 @@ class ModFilterApp:
 
     def _on_filter_done(self, results):
         icons = {
-            'server': '✅', 'client': '❌', 'skipped': '⚠️', 'error': '⚠️',
+            'server': '\u2705', 'client': '\u274c', 'skipped': '\u26a0\ufe0f', 'error': '\u26a0\ufe0f',
         }
         for r in results:
             icon = icons.get(r.status, '?')
